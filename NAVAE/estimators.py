@@ -5,6 +5,7 @@ from __future__ import print_function
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 import tensorflow_probability as tfp
+from tensorflow.python.training import session_run_hook
 tfd = tfp.distributions
 
 __all__ = ['VAEEstimator', 'NAVAEEstimator']
@@ -130,8 +131,7 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
             sigma = tf.Variable(initial_value=np.ones((training_size, (n_hidden *(n_hidden +1) // 2))), dtype=tf.float32)
         qz_sigma = tfd.matrix_diag_transform(tfd.fill_triangular(sigma), transform=tf.nn.softplus)
 
-        qz = tfd.MultivariateNormalTriL(loc=qz_mu, scale_tril=qz_sigma,
-                                        name='code')
+        qz = tfd.MultivariateNormalTriL(loc=tf.gather(qz_mu, inds), scale_tril=tf.gather(qz_sigma, inds), name='code')
         pz = latent_prior(n_hidden)
         # Sample from the infered posterior
         code = qz.sample()
@@ -146,6 +146,8 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
 
     train_op = None
     eval_metric_ops = None
+    training_hooks = None
+
     if mode == tf.estimator.ModeKeys.TRAIN:
         tf.summary.image('input',  tf.clip_by_value(labels, 0, 1))
         tf.summary.image('rec', tf.clip_by_value(predictions, 0, 1))
@@ -161,10 +163,40 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
         tf.losses.add_loss(rec_loss)
 
         total_loss = tf.losses.get_total_loss()
-        train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss=total_loss,
-                                                                                global_step=tf.train.get_global_step())
-    elif mode == tf.estimator.ModeKeys.EVAL:
 
+        # Build the train op for the network weights only
+        tvars = tf.trainable_variables()
+        net_vars = [v for v in tvars if 'code' not in v.name]
+        code_vars = [v for v in tvars if 'code' in v.name]
+
+        class RunTrainOpsHook(session_run_hook.SessionRunHook):
+          """A hook to run train ops a fixed number of times."""
+
+          def __init__(self, train_ops, train_steps):
+            """Run train ops a certain number of times.
+            Args:
+              train_ops: A train op or iterable of train ops to run.
+              train_steps: The number of times to run the op(s).
+            """
+            if not isinstance(train_ops, (list, tuple)):
+              train_ops = [train_ops]
+            self._train_ops = train_ops
+            self._train_steps = train_steps
+
+          def before_run(self, run_context):
+            for _ in range(self._train_steps):
+                run_context.session.run(self._train_ops)
+
+        train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss=total_loss,
+                                                                                var_list=net_vars,
+                                                                                global_step=tf.train.get_global_step())
+        train_op_code = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss=total_loss,
+                                                                                var_list=code_vars,
+                                                                                global_step=0)
+
+        training_hooks = [RunTrainOpsHook(train_op_code, 100)]
+
+    elif mode == tf.estimator.ModeKeys.EVAL:
         eval_metric_ops = {
             "kl": tf.reduce_mean(qz.log_prob(code) - pz.log_prob(code),
                                 axis=0),
@@ -174,6 +206,7 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
     return tf.estimator.EstimatorSpec(mode=mode, predictions=predictions,
                                       loss=total_loss,
                                       train_op=train_op,
+                                      training_hooks=training_hooks,
                                       eval_metric_ops=eval_metric_ops)
 
 class NAVAEEstimator(tf.estimator.Estimator):
