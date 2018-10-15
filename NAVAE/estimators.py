@@ -127,7 +127,7 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
         inds = features['inds']
         # Create parametrized posterior for entire training sample
         with tf.variable_scope("code"):
-            qz_mu = tf.Variable(initial_value=np.zeros((training_size, n_hidden), dtype=tf.float32)
+            qz_mu = tf.Variable(initial_value=np.zeros((training_size, n_hidden)), dtype=tf.float32)
             sigma = tf.Variable(initial_value=np.ones((training_size, (n_hidden *(n_hidden +1) // 2))), dtype=tf.float32)
         qz_sigma = tfd.matrix_diag_transform(tfd.fill_triangular(sigma), transform=tf.nn.softplus)
 
