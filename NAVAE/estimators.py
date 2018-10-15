@@ -1,7 +1,7 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-
+import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 import tensorflow_probability as tfp
@@ -56,8 +56,8 @@ def _vae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
     train_op = None
     eval_metric_ops = None
     if mode == tf.estimator.ModeKeys.TRAIN:
-        tf.summary.image('input',  tf.clip_by_value(labels,0,1))
-        tf.summary.image('rec', tf.clip_by_value(predictions,0,1))
+        tf.summary.image('input',  tf.clip_by_value(labels, 0, 1))
+        tf.summary.image('rec', tf.clip_by_value(predictions, 0, 1))
         tf.summary.image('diff', labels - predictions)
 
         # Compute KL divergence between code and prior distribution
@@ -75,8 +75,7 @@ def _vae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
     elif mode == tf.estimator.ModeKeys.EVAL:
 
         eval_metric_ops = {
-            "kl": tf.reduce_mean(qz.log_prob(code) - pz.log_prob(code),
-                                axis=0),
+            "kl": tf.reduce_mean(qz.log_prob(code) - pz.log_prob(code), axis=0),
             "log_p(x|z)": tf.reduce_mean(decoder_likelihood.log_prob(slim.flatten(labels)), axis=0)
         }
 
@@ -127,14 +126,18 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
         inds = features['inds']
         # Create parametrized posterior for entire training sample
         with tf.variable_scope("code"):
-            qz_mu = tf.Variable(initial_value=np.zeros((training_size, n_hidden)), dtype=tf.float32)
+            mu = tf.Variable(initial_value=np.zeros((training_size, n_hidden)), dtype=tf.float32)
             sigma = tf.Variable(initial_value=np.ones((training_size, (n_hidden *(n_hidden +1) // 2))), dtype=tf.float32)
-        qz_sigma = tfd.matrix_diag_transform(tfd.fill_triangular(sigma), transform=tf.nn.softplus)
+        qz_mu = tf.gather(mu, inds)
+        qz_sigma = tfd.matrix_diag_transform(tfd.fill_triangular(tf.gather(sigma, inds)), transform=tf.nn.softplus)
+        print(qz_sigma)
+        print(qz_mu)
+        qz = tfd.MultivariateNormalTriL(loc=qz_mu,
+                                        scale_tril=qz_sigma, name='code')
 
-        qz = tfd.MultivariateNormalTriL(loc=tf.gather(qz_mu, inds), scale_tril=tf.gather(qz_sigma, inds), name='code')
         pz = latent_prior(n_hidden)
         # Sample from the infered posterior
-        code = qz.sample()
+        code = tf.reshape(qz.sample(), [-1, n_hidden])
 
     # Generator
     predictions = decoder_fn(code, is_training=is_training, scope='generator')
@@ -190,11 +193,10 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
         train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss=total_loss,
                                                                                 var_list=net_vars,
                                                                                 global_step=tf.train.get_global_step())
-        train_op_code = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss=total_loss,
-                                                                                var_list=code_vars,
-                                                                                global_step=0)
+        train_op_code = tf.train.AdamOptimizer(learning_rate=0.01).minimize(loss=total_loss,
+                                                                                var_list=code_vars)
 
-        training_hooks = [RunTrainOpsHook(train_op_code, 100)]
+        training_hooks = [RunTrainOpsHook(train_op_code, 50)]
 
     elif mode == tf.estimator.ModeKeys.EVAL:
         eval_metric_ops = {
