@@ -123,11 +123,11 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
         code = features['z']
         predict_task = 'decode'
     else:
-        with tf.variable_scope("temp"):
-            x_temp = tf.Variable(initial_value=np.zeros((128,28,28,1), dtype='float32'), trainable=False)
-            inds_temp = tf.Variable(initial_value=np.zeros(128, dtype='int64'), trainable=False)
-
         inds = features['inds']
+        with tf.variable_scope("temp"):
+            x_temp = tf.Variable(initial_value=tf.zeros_like(x), trainable=False)
+            inds_temp = tf.Variable(initial_value=tf.zeros_like(inds), trainable=False)
+
         # Create parametrized posterior for entire training sample
         with tf.variable_scope("code"):
             mu = tf.Variable(initial_value=np.zeros((training_size, n_hidden)), dtype=tf.float32)
