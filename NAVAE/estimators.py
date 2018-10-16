@@ -123,15 +123,18 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
         code = features['z']
         predict_task = 'decode'
     else:
+        with tf.variable_scope("temp"):
+            x_temp = tf.Variable(initial_value=tf.zeros_like(x), trainable=False)
+            inds_temp = tf.Variable(initial_value=tf.zeros_like(inds), trainable=False)
+
         inds = features['inds']
         # Create parametrized posterior for entire training sample
         with tf.variable_scope("code"):
             mu = tf.Variable(initial_value=np.zeros((training_size, n_hidden)), dtype=tf.float32)
             sigma = tf.Variable(initial_value=np.ones((training_size, (n_hidden *(n_hidden +1) // 2))), dtype=tf.float32)
-        qz_mu = tf.gather(mu, inds)
-        qz_sigma = tfd.matrix_diag_transform(tfd.fill_triangular(tf.gather(sigma, inds)), transform=tf.nn.softplus)
-        print(qz_sigma)
-        print(qz_mu)
+        qz_mu = tf.gather(mu, inds_temp)
+        qz_sigma = tfd.matrix_diag_transform(tfd.fill_triangular(tf.gather(sigma, inds_temp)), transform=tf.nn.softplus)
+
         qz = tfd.MultivariateNormalTriL(loc=qz_mu,
                                         scale_tril=qz_sigma, name='code')
 
@@ -152,16 +155,16 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
     training_hooks = None
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        tf.summary.image('input',  tf.clip_by_value(labels, 0, 1))
+        tf.summary.image('input',  tf.clip_by_value(x_temp, 0, 1))
         tf.summary.image('rec', tf.clip_by_value(predictions, 0, 1))
-        tf.summary.image('diff', labels - predictions)
+        tf.summary.image('diff', x_temp - predictions)
 
         # Compute KL divergence between code and prior distribution
         kl = tf.reduce_mean(qz.log_prob(code) - pz.log_prob(code), axis=0)
         tf.summary.scalar('kl_divergence', kl)
         tf.losses.add_loss(kl)
 
-        rec_loss = -tf.reduce_mean(decoder_likelihood.log_prob(slim.flatten(labels)))
+        rec_loss = -tf.reduce_mean(decoder_likelihood.log_prob(slim.flatten(x_temp)))
         tf.summary.scalar('reconstruction', rec_loss)
         tf.losses.add_loss(rec_loss)
 
@@ -175,8 +178,8 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
         class RunTrainOpsHook(session_run_hook.SessionRunHook):
           """A hook to run train ops a fixed number of times."""
 
-          def __init__(self, train_ops, train_steps):
-            """Run train ops a certain number of times.
+          def __init__(self, train_ops, train_steps, x_temp, inds_temp, x, inds):
+            """Loads the batch and run VI steps
             Args:
               train_ops: A train op or iterable of train ops to run.
               train_steps: The number of times to run the op(s).
@@ -185,18 +188,20 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
               train_ops = [train_ops]
             self._train_ops = train_ops
             self._train_steps = train_steps
+            self._batch_ops = [x_temp.assign(x), inds_temp.assign(inds)]
 
           def before_run(self, run_context):
+            # Loads the batch
+            run_context.session.run(self._batch_ops)
             for _ in range(self._train_steps):
                 run_context.session.run(self._train_ops)
 
         train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss=total_loss,
                                                                                 var_list=net_vars,
                                                                                 global_step=tf.train.get_global_step())
-        train_op_code = tf.train.AdamOptimizer(learning_rate=0.01).minimize(loss=total_loss,
+        train_op_code = tf.train.AdamOptimizer(learning_rate=0.1).minimize(loss=total_loss,
                                                                                 var_list=code_vars)
-
-        training_hooks = [RunTrainOpsHook(train_op_code, 50)]
+        training_hooks = [RunTrainOpsHook(train_op_code, 20, x_temp, inds_temp, x, inds)]
 
     elif mode == tf.estimator.ModeKeys.EVAL:
         eval_metric_ops = {
