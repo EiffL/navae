@@ -199,7 +199,7 @@ def _navae_model_fn(n_hidden, features, labels, mode, encoder_fn, decoder_fn,
         train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss=total_loss,
                                                                                 var_list=net_vars,
                                                                                 global_step=tf.train.get_global_step())
-        train_op_code = tf.train.AdamOptimizer(learning_rate=0.1).minimize(loss=total_loss,
+        train_op_code = tf.train.AdamOptimizer(learning_rate=0.01).minimize(loss=total_loss,
                                                                                 var_list=code_vars)
         training_hooks = [RunTrainOpsHook(train_op_code, 20, x_temp, inds_temp, x, inds)]
 
